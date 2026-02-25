@@ -22,6 +22,7 @@ class LocalStore(private val context: Context) {
     private val bookshelfKey = stringPreferencesKey("bookshelf")
     private val styleKey = stringPreferencesKey("reader_style")
     private val progressKey = stringPreferencesKey("reading_progress")
+    private val catalogSyncedKey = stringPreferencesKey("catalog_synced_books")
 
     val bookshelfFlow: Flow<List<NovelBook>> = context.dataStore.data.map { pref ->
         val raw = pref[bookshelfKey] ?: return@map emptyList()
@@ -47,6 +48,13 @@ class LocalStore(private val context: Context) {
         }.getOrDefault(emptyMap())
     }
 
+    val catalogSyncedFlow: Flow<Set<String>> = context.dataStore.data.map { pref ->
+        val raw = pref[catalogSyncedKey] ?: return@map emptySet()
+        runCatching {
+            json.decodeFromString(ListSerializer(String.serializer()), raw).toSet()
+        }.getOrDefault(emptySet())
+    }
+
     suspend fun saveBookshelf(books: List<NovelBook>) {
         context.dataStore.edit { pref ->
             pref[bookshelfKey] = json.encodeToString(ListSerializer(NovelBook.serializer()), books)
@@ -65,6 +73,12 @@ class LocalStore(private val context: Context) {
                 MapSerializer(String.serializer(), ReadingProgress.serializer()),
                 progress
             )
+        }
+    }
+
+    suspend fun saveCatalogSyncedBooks(bookIds: Set<String>) {
+        context.dataStore.edit { pref ->
+            pref[catalogSyncedKey] = json.encodeToString(ListSerializer(String.serializer()), bookIds.toList())
         }
     }
 }

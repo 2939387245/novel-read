@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -28,8 +30,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -44,6 +48,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBarItem
@@ -57,6 +62,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,9 +74,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -80,11 +88,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Constraints
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.view.WindowCompat
 import com.example.novel.NovelUiState
 import com.example.novel.NovelViewModel
+import com.example.novel.CacheItemUi
 import com.example.novel.data.HomeTab
 import com.example.novel.data.NovelBook
 import com.example.novel.data.ReaderStyle
@@ -97,6 +108,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 fun NovelReaderApp(vm: NovelViewModel = viewModel()) {
@@ -104,6 +116,7 @@ fun NovelReaderApp(vm: NovelViewModel = viewModel()) {
     val style by vm.readerStyle.collectAsStateWithLifecycle()
     val selectedBook by vm.selectedBook.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val view = LocalView.current
 
     LaunchedEffect(ui.message) {
         ui.message?.let {
@@ -113,6 +126,15 @@ fun NovelReaderApp(vm: NovelViewModel = viewModel()) {
     }
 
     NovelTheme(darkTheme = style.darkMode) {
+        SideEffect {
+            val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
+            val darkBar = style.darkMode || style.backgroundMode == "dark"
+            val (readerBg, _) = readerColors(style)
+            window.statusBarColor = readerBg.toArgb()
+            window.navigationBarColor = readerBg.toArgb()
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkBar
+            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = !darkBar
+        }
         Surface(modifier = Modifier.fillMaxSize()) {
             if (selectedBook != null) {
                 ReaderPage(
@@ -127,7 +149,9 @@ fun NovelReaderApp(vm: NovelViewModel = viewModel()) {
                     onOpenChapter = vm::openChapter,
                     onPrevChapter = vm::prevChapter,
                     onPrevChapterToEnd = vm::prevChapterToEnd,
-                    onNextChapter = vm::nextChapter
+                    onNextChapter = vm::nextChapter,
+                    onSyncChapters = vm::syncCurrentBookChapters,
+                    onRefreshCurrentChapter = vm::refreshCurrentChapter
                 )
             } else {
                 HomePage(
@@ -140,6 +164,9 @@ fun NovelReaderApp(vm: NovelViewModel = viewModel()) {
                     style = style,
                     onStyleChange = vm::updateReaderStyle,
                     onDarkModeChange = vm::toggleDarkMode,
+                    onClearCache = vm::clearAllCachedChapters,
+                    onRefreshCache = vm::refreshCacheStats,
+                    onClearCacheBook = vm::clearCacheForBook,
                     onBackgroundModeChange = vm::updateBackgroundMode,
                     onPageModeChange = vm::updatePageMode
                 )
@@ -159,6 +186,9 @@ private fun HomePage(
     style: ReaderStyle,
     onStyleChange: (ReaderStyle) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
+    onClearCache: () -> Unit,
+    onRefreshCache: () -> Unit,
+    onClearCacheBook: (String) -> Unit,
     onBackgroundModeChange: (String) -> Unit,
     onPageModeChange: (String) -> Unit
 ) {
@@ -208,9 +238,13 @@ private fun HomePage(
                 )
 
                 HomeTab.SETTINGS -> SettingsTab(
+                    ui = ui,
                     style = style,
                     onStyleChange = onStyleChange,
                     onDarkModeChange = onDarkModeChange,
+                    onClearCache = onClearCache,
+                    onRefreshCache = onRefreshCache,
+                    onClearCacheBook = onClearCacheBook,
                     onBackgroundModeChange = onBackgroundModeChange,
                     onPageModeChange = onPageModeChange
                 )
@@ -232,24 +266,39 @@ private fun SearchTab(
             .padding(horizontal = 16.dp)
     ) {
         Spacer(modifier = Modifier.height(10.dp))
-        Text("网址导入", style = MaterialTheme.typography.headlineMedium)
-        Text("复制小说目录链接，直接整本导入书架", style = MaterialTheme.typography.bodyMedium)
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                modifier = Modifier.weight(1f),
-                value = ui.importUrl,
-                onValueChange = onImportUrlChanged,
-                placeholder = { Text("粘贴小说目录网址（推荐）") },
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Button(onClick = onImportFromUrl, enabled = !ui.isImporting) {
-                Text(if (ui.isImporting) "导入中" else "整本导入")
+        Card(shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("网址导入", style = MaterialTheme.typography.headlineSmall)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("粘贴目录页网址，先快速加入书架，再后台补全章节。", style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    modifier = Modifier.fillMaxWidth(),
+                    value = ui.importUrl,
+                    onValueChange = onImportUrlChanged,
+                    placeholder = { Text("粘贴小说目录网址（支持超长链接）") },
+                    singleLine = false,
+                    minLines = 2,
+                    maxLines = 4
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = ui.importUrl,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(onClick = onImportFromUrl, enabled = !ui.isImporting, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (ui.isImporting) "导入中..." else "整本导入")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("提示：导入后可在阅读页点“同步”追加最新章节。", style = MaterialTheme.typography.bodySmall)
             }
         }
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("提示：导入目录页成功后会自动抓章节，阅读时可用上一章/下一章。", style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -266,7 +315,16 @@ private fun BookshelfTab(
             .padding(horizontal = 16.dp)
     ) {
         Spacer(modifier = Modifier.height(10.dp))
-        Text("我的书架", style = MaterialTheme.typography.headlineMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("我的书架", style = MaterialTheme.typography.headlineMedium)
+                Text("共 ${books.size} 本", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f))
+            }
+        }
         Spacer(modifier = Modifier.height(12.dp))
         if (books.isEmpty()) {
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
@@ -284,7 +342,8 @@ private fun BookshelfTab(
                         onPrimaryAction = { onOpenBook(book) },
                         onSecondaryAction = { onRemoveBookshelf(book) },
                         primaryLabel = "开始阅读",
-                        secondaryLabel = "移除"
+                        secondaryLabel = "移除",
+                        subtitle = "章节 ${book.chapters.size}"
                     )
                 }
             }
@@ -294,12 +353,20 @@ private fun BookshelfTab(
 
 @Composable
 private fun SettingsTab(
+    ui: NovelUiState,
     style: ReaderStyle,
     onStyleChange: (ReaderStyle) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
+    onClearCache: () -> Unit,
+    onRefreshCache: () -> Unit,
+    onClearCacheBook: (String) -> Unit,
     onBackgroundModeChange: (String) -> Unit,
     onPageModeChange: (String) -> Unit
 ) {
+    var section by remember { mutableStateOf("menu") }
+    LaunchedEffect(section) {
+        if (section == "cache") onRefreshCache()
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -308,19 +375,105 @@ private fun SettingsTab(
             .verticalScroll(rememberScrollState())
     ) {
         Spacer(modifier = Modifier.height(10.dp))
-        Text("阅读样式", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("夜间模式")
-            Switch(checked = style.darkMode, onCheckedChange = onDarkModeChange)
+        when (section) {
+            "menu" -> {
+                Text("设置", style = MaterialTheme.typography.headlineMedium)
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { section = "style" }
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("阅读样式")
+                        Text("进入", color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { section = "cache" }
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("缓存管理")
+                        Text("进入", color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            "style" -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { section = "menu" }) { Text("返回") }
+                    Text("阅读样式", style = MaterialTheme.typography.titleLarge)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("夜间模式")
+                    Switch(checked = style.darkMode, onCheckedChange = onDarkModeChange)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                BackgroundSelector(style.backgroundMode, onBackgroundModeChange)
+                Spacer(modifier = Modifier.height(10.dp))
+                PageModeSelector(style.pageMode, onPageModeChange)
+                Spacer(modifier = Modifier.height(12.dp))
+                StylePanel(style = style, onStyleChange = onStyleChange)
+            }
+            "cache" -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { section = "menu" }) { Text("返回") }
+                    Text("缓存管理", style = MaterialTheme.typography.titleLarge)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(onClick = onRefreshCache) { Text("刷新缓存列表") }
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(onClick = onClearCache) { Text("清除全部章节缓存") }
+                Spacer(modifier = Modifier.height(10.dp))
+                CacheList(cacheItems = ui.cacheStats, onClearCacheBook = onClearCacheBook)
+            }
         }
-        Spacer(modifier = Modifier.height(10.dp))
-        BackgroundSelector(style.backgroundMode, onBackgroundModeChange)
-        Spacer(modifier = Modifier.height(10.dp))
-        PageModeSelector(style.pageMode, onPageModeChange)
-        Spacer(modifier = Modifier.height(12.dp))
-        StylePanel(style = style, onStyleChange = onStyleChange)
         Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun CacheList(
+    cacheItems: List<CacheItemUi>,
+    onClearCacheBook: (String) -> Unit
+) {
+    if (cacheItems.isEmpty()) {
+        Text("当前没有缓存。")
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        cacheItems.forEach { item ->
+            Card(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "${if (item.inBookshelf) "书架内" else "已不在书架"} · ${item.chapterCount} 章 · ${formatBytes(item.totalBytes)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                        )
+                    }
+                    IconButton(onClick = { onClearCacheBook(item.bookId) }) {
+                        Icon(Icons.Default.Delete, contentDescription = "删除缓存")
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -338,7 +491,9 @@ private fun ReaderPage(
     onOpenChapter: (Int) -> Unit,
     onPrevChapter: () -> Unit,
     onPrevChapterToEnd: () -> Unit,
-    onNextChapter: () -> Unit
+    onNextChapter: () -> Unit,
+    onSyncChapters: () -> Unit,
+    onRefreshCurrentChapter: () -> Unit
 ) {
     var showStyleSheet by remember { mutableStateOf(false) }
     var showChapterSheet by remember { mutableStateOf(false) }
@@ -417,10 +572,8 @@ private fun ReaderPage(
                                 textIndent = TextIndent(firstLine = 2.em)
                             )
                             val paragraphBreakCount = when {
-                                style.paragraphSpacingDp <= 8f -> 1
-                                style.paragraphSpacingDp <= 18f -> 2
-                                style.paragraphSpacingDp <= 28f -> 3
-                                else -> 4
+                                style.paragraphSpacingDp <= 4f -> 1
+                                else -> ((style.paragraphSpacingDp - 4f) / 3.5f).toInt() + 1
                             }
                             val widthPx = with(density) { maxWidth.roundToPx() }
                             val heightPx = with(density) { maxHeight.roundToPx() }
@@ -587,6 +740,15 @@ private fun ReaderPage(
                             IconButton(onClick = { showChapterSheet = true }) {
                                 Icon(Icons.Default.List, contentDescription = "目录")
                             }
+                            TextButton(
+                                onClick = onSyncChapters,
+                                enabled = uiState.initialCatalogSyncDone && !uiState.isSyncingChapters
+                            ) {
+                                Text("同步")
+                            }
+                            TextButton(onClick = onRefreshCurrentChapter, enabled = !uiState.isLoadingContent) {
+                                Text("重载本章")
+                            }
                             IconButton(onClick = { showStyleSheet = true }) {
                                 Icon(Icons.Rounded.Tune, contentDescription = "样式")
                             }
@@ -617,6 +779,31 @@ private fun ReaderPage(
                     }
                 }
             }
+
+            if (uiState.isSyncingChapters) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(top = 6.dp, start = 12.dp, end = 12.dp)
+                ) {
+                    val progress = if (uiState.syncMaxPages > 0) {
+                        (uiState.syncScannedPages.toFloat() / uiState.syncMaxPages.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    LinearProgressIndicator(
+                        progress = progress,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "后台补全目录 ${uiState.syncScannedPages}/${uiState.syncMaxPages} 页，已识别章节 ${uiState.syncFoundChapters}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
         }
     }
 
@@ -642,6 +829,25 @@ private fun ReaderPage(
     }
 
     if (showChapterSheet) {
+        val chapterListState = rememberLazyListState()
+        val selectedChapterIndex = uiState.currentChapterIndex
+            .coerceIn(0, (uiState.chapterTitles.size - 1).coerceAtLeast(0))
+        var chapterSliderValue by remember(showChapterSheet, selectedChapterIndex) {
+            mutableStateOf(selectedChapterIndex.toFloat())
+        }
+        LaunchedEffect(showChapterSheet, selectedChapterIndex, uiState.chapterTitles.size) {
+            if (showChapterSheet && uiState.chapterTitles.isNotEmpty()) {
+                chapterListState.scrollToItem(selectedChapterIndex)
+                chapterSliderValue = selectedChapterIndex.toFloat()
+            }
+        }
+        LaunchedEffect(showChapterSheet, chapterListState) {
+            if (showChapterSheet) {
+                snapshotFlow { chapterListState.firstVisibleItemIndex }
+                    .distinctUntilChanged()
+                    .collect { chapterSliderValue = it.toFloat() }
+            }
+        }
         ModalBottomSheet(onDismissRequest = { showChapterSheet = false }) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).padding(bottom = 18.dp)) {
                 Text("章节目录", style = MaterialTheme.typography.titleLarge)
@@ -649,19 +855,85 @@ private fun ReaderPage(
                 if (uiState.chapterTitles.isEmpty()) {
                     Text("未识别到章节")
                 }
-                LazyColumn(modifier = Modifier.height(420.dp)) {
-                    items(uiState.chapterTitles) { chapter ->
-                        Text(
-                            text = chapter.first,
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                showChapterSheet = false
-                                if (book.chapters.isNotEmpty()) {
-                                    onOpenChapter(chapter.second)
-                                } else {
-                                    scope.launch { listState.scrollToItem(chapter.second) }
-                                }
-                            }.padding(vertical = 10.dp)
-                        )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(420.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LazyColumn(
+                        state = chapterListState,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        itemsIndexed(uiState.chapterTitles) { index, chapter ->
+                            val selected = index == selectedChapterIndex
+                            Text(
+                                text = chapter.first,
+                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent,
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .clickable {
+                                        showChapterSheet = false
+                                        if (book.chapters.isNotEmpty()) {
+                                            onOpenChapter(chapter.second)
+                                        } else {
+                                            scope.launch { listState.scrollToItem(chapter.second) }
+                                        }
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 10.dp)
+                            )
+                        }
+                    }
+                    if (uiState.chapterTitles.size > 1) {
+                        var trackHeightPx by remember(showChapterSheet) { mutableStateOf(1f) }
+                        val maxIndex = uiState.chapterTitles.lastIndex.coerceAtLeast(1)
+                        val thumbSize = 22.dp
+                        val density = LocalDensity.current
+                        val thumbSizePx = with(density) { thumbSize.roundToPx() }
+                        fun updateByY(y: Float) {
+                            val fraction = (y / trackHeightPx).coerceIn(0f, 1f)
+                            val target = (fraction * maxIndex).roundToInt().coerceIn(0, maxIndex)
+                            chapterSliderValue = target.toFloat()
+                            scope.launch { chapterListState.scrollToItem(target) }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .height(390.dp)
+                                .width(28.dp)
+                                .onSizeChanged { trackHeightPx = it.height.toFloat().coerceAtLeast(1f) }
+                                .pointerInput(maxIndex) {
+                                    detectDragGestures(
+                                        onDragStart = { offset -> updateByY(offset.y) },
+                                        onDrag = { change, _ -> updateByY(change.position.y) }
+                                    )
+                                },
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(7.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                                        RoundedCornerShape(99.dp)
+                                    )
+                            )
+                            val thumbTravelPx = (trackHeightPx - thumbSizePx).coerceAtLeast(1f)
+                            val thumbOffsetPx =
+                                ((chapterSliderValue.coerceIn(0f, maxIndex.toFloat()) / maxIndex.toFloat()) * thumbTravelPx)
+                                    .roundToInt()
+                            Box(
+                                modifier = Modifier
+                                    .offset { IntOffset(0, thumbOffsetPx) }
+                                    .width(thumbSize)
+                                    .height(thumbSize)
+                                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(99.dp))
+                            )
+                        }
                     }
                 }
             }
@@ -736,7 +1008,7 @@ private fun paginatePagesByLayout(
     paragraphBreakCount: Int
 ): List<Pair<Int, String>> {
     if (paragraphs.isEmpty()) return listOf(0 to "")
-    val separator = "\n".repeat(paragraphBreakCount.coerceIn(1, 4))
+    val separator = "\n".repeat(paragraphBreakCount.coerceIn(1, 10))
     val fullText = paragraphs.joinToString(separator)
     val paraStarts = IntArray(paragraphs.size)
     var cursor = 0
@@ -804,5 +1076,17 @@ private fun readerColors(style: ReaderStyle): Pair<Color, Color> {
         "gray" -> Color(0xFFF0F0F0) to Color(0xFF222222)
         "dark" -> Color(0xFF1C1C1E) to Color(0xFFEDEDED)
         else -> Color(0xFFFFF7E8) to Color(0xFF2B2520)
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val kb = 1024.0
+    val mb = kb * 1024.0
+    val gb = mb * 1024.0
+    return when {
+        bytes >= gb -> String.format("%.2f GB", bytes / gb)
+        bytes >= mb -> String.format("%.2f MB", bytes / mb)
+        bytes >= kb -> String.format("%.1f KB", bytes / kb)
+        else -> "$bytes B"
     }
 }
